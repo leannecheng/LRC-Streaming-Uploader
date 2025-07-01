@@ -1,0 +1,5 @@
+.env
+.venv/
+token.json
+.streamlit/
+client_secrets.json
