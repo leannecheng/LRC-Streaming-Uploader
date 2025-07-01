@@ -3,8 +3,7 @@ import pandas as pd
 import io
 import re
 import json
-from google.oauth2.credentials import Credentials
-from google_auth_oauthlib.flow import Flow
+from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload, MediaIoBaseUpload
 
@@ -12,25 +11,14 @@ from googleapiclient.http import MediaIoBaseDownload, MediaIoBaseUpload
 # CONFIGURATION — fill in your Drive file ID
 MASTER_FILE_ID = "1-oPMoY0D_vaF0vhxPVKizDLnNIFulcYa"
 SCOPES = ["https://www.googleapis.com/auth/drive"]
-REDIRECT_URI = "https://lrc-streaming-laura-eyes-only.streamlit.app/"  # Replace with your deployed app URL
 # ───────────────────────────────────────────────
-
-def creds_to_dict(creds):
-    return {
-        "token": creds.token,
-        "refresh_token": creds.refresh_token,
-        "token_uri": creds.token_uri,
-        "client_id": creds.client_id,
-        "client_secret": creds.client_secret,
-        "scopes": creds.scopes,
-    }
 
 @st.cache_resource(show_spinner=False)
 def get_drive_service():
-    if "credentials" not in st.session_state:
-        st.error("You must authenticate first using the Google login button above.")
-        st.stop()
-    creds = Credentials(**st.session_state["credentials"])
+    creds = service_account.Credentials.from_service_account_info(
+        st.secrets["service_account"],
+        scopes=SCOPES,
+    )
     return build("drive", "v3", credentials=creds)
 
 def sort_terms_dict(terms: dict) -> dict:
@@ -45,39 +33,6 @@ def sort_terms_dict(terms: dict) -> dict:
     return dict(sorted(terms.items(), key=key_fn))
 
 st.title("LRC Streaming Data Uploader")
-
-# ───────────────────────────────
-# Google OAuth Flow
-flow = Flow.from_client_config(
-    {
-        "web": {
-            "client_id": st.secrets["drive_oauth"]["client_id"],
-            "client_secret": st.secrets["drive_oauth"]["client_secret"],
-            "auth_uri": "https://accounts.google.com/o/oauth2/auth",
-            "token_uri": "https://oauth2.googleapis.com/token"
-        }
-    },
-    scopes=SCOPES,
-    redirect_uri=REDIRECT_URI,
-)
-
-query_params = st.query_params
-if "code" in query_params:
-    code = query_params["code"][0]
-    try:
-        flow.fetch_token(code=code)
-        creds = flow.credentials
-        st.session_state["credentials"] = creds_to_dict(creds)
-        st.success("✅ Successfully authenticated with Google!")
-    except Exception as e:
-        st.error(f"Failed to fetch token: {e}")
-
-if "credentials" not in st.session_state:
-    auth_url, _ = flow.authorization_url(prompt="consent", access_type="offline", include_granted_scopes="true")
-    st.warning("🔐 You must log in with Google to continue.")
-    st.markdown(f"[Click here to authenticate with Google]({auth_url})")
-    st.stop()
-# ───────────────────────────────
 
 # PART 1: RAW EXCEL UPLOAD & CLEANING
 st.header("1️⃣ Prepare & Upload Raw Excel")
