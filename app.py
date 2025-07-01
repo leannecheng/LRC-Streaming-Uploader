@@ -4,8 +4,7 @@ import io
 import re
 import json
 from google.oauth2.credentials import Credentials
-from google_auth_oauthlib.flow import InstalledAppFlow
-from google.auth.transport.requests import Request
+from google_auth_oauthlib.flow import Flow
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload, MediaIoBaseUpload
 
@@ -13,39 +12,25 @@ from googleapiclient.http import MediaIoBaseDownload, MediaIoBaseUpload
 # CONFIGURATION — fill in your Drive file ID
 MASTER_FILE_ID = "1-oPMoY0D_vaF0vhxPVKizDLnNIFulcYa"
 SCOPES = ["https://www.googleapis.com/auth/drive"]
+REDIRECT_URI = "https://lrc-streaming-laura-eyes-only.streamlit.app/"  # Replace with your deployed app URL
 # ───────────────────────────────────────────────
 
-@st.cache_resource(show_spinner=False)
-def get_user_credentials():
-    token_path = "token.json"
-    creds = None
-    try:
-        creds = Credentials.from_authorized_user_file(token_path, SCOPES)
-    except Exception:
-        creds = None
-    if not creds or not creds.valid:
-        if creds and creds.expired and creds.refresh_token:
-            creds.refresh(Request())
-        else:
-            flow = InstalledAppFlow.from_client_config(
-                {
-                    "installed": {
-                        "client_id": st.secrets["drive_oauth"]["client_id"],
-                        "client_secret": st.secrets["drive_oauth"]["client_secret"],
-                        "auth_uri": "https://accounts.google.com/o/oauth2/auth",
-                        "token_uri": "https://oauth2.googleapis.com/token"
-                    }
-                },
-                SCOPES
-            )
-            creds = flow.run_local_server(port=0)
-        with open(token_path, "w") as f:
-            f.write(creds.to_json())
-    return creds
+def creds_to_dict(creds):
+    return {
+        "token": creds.token,
+        "refresh_token": creds.refresh_token,
+        "token_uri": creds.token_uri,
+        "client_id": creds.client_id,
+        "client_secret": creds.client_secret,
+        "scopes": creds.scopes,
+    }
 
 @st.cache_resource(show_spinner=False)
 def get_drive_service():
-    creds = get_user_credentials()
+    if "credentials" not in st.session_state:
+        st.error("You must authenticate first using the Google login button above.")
+        st.stop()
+    creds = Credentials(**st.session_state["credentials"])
     return build("drive", "v3", credentials=creds)
 
 def sort_terms_dict(terms: dict) -> dict:
@@ -60,6 +45,39 @@ def sort_terms_dict(terms: dict) -> dict:
     return dict(sorted(terms.items(), key=key_fn))
 
 st.title("LRC Streaming Data Uploader")
+
+# ───────────────────────────────
+# Google OAuth Flow
+flow = Flow.from_client_config(
+    {
+        "web": {
+            "client_id": st.secrets["drive_oauth"]["client_id"],
+            "client_secret": st.secrets["drive_oauth"]["client_secret"],
+            "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+            "token_uri": "https://oauth2.googleapis.com/token"
+        }
+    },
+    scopes=SCOPES,
+    redirect_uri=REDIRECT_URI,
+)
+
+query_params = st.experimental_get_query_params()
+if "code" in query_params:
+    code = query_params["code"][0]
+    try:
+        flow.fetch_token(code=code)
+        creds = flow.credentials
+        st.session_state["credentials"] = creds_to_dict(creds)
+        st.success("✅ Successfully authenticated with Google!")
+    except Exception as e:
+        st.error(f"Failed to fetch token: {e}")
+
+if "credentials" not in st.session_state:
+    auth_url, _ = flow.authorization_url(prompt="consent", access_type="offline", include_granted_scopes="true")
+    st.warning("🔐 You must log in with Google to continue.")
+    st.markdown(f"[Click here to authenticate with Google]({auth_url})")
+    st.stop()
+# ───────────────────────────────
 
 # PART 1: RAW EXCEL UPLOAD & CLEANING
 st.header("1️⃣ Prepare & Upload Raw Excel")
@@ -175,10 +193,7 @@ if st.session_state.get("step2"):
         mime="application/json"
     )
 
-    
-
     checked = st.file_uploader("Upload checked .xlsx:", type="xlsx", key="checked")
-
 
     if checked:
         term = st.session_state["term"]
@@ -198,7 +213,6 @@ if st.session_state.get("step2"):
                 first_lang_raw = str(lang_cell).split(",")[0].strip().split()[0]
                 first_lang = first_lang_raw if first_lang_raw.lower() != "nan" else None
 
-            # build and uppercase department key
             if raw_dept in ("asianlan", "slavic", "asian") and first_lang:
                 dept_key = f"{raw_dept}: {first_lang}".upper()
             else:
@@ -221,8 +235,6 @@ if st.session_state.get("step2"):
             term_json["total_students"]     += students
             term_json["total_reservations"] += reservs
 
-
-
         master_data.setdefault("terms", {})
         master_data["terms"][term] = term_json
         master_data["terms"] = sort_terms_dict(master_data["terms"])
@@ -234,7 +246,6 @@ if st.session_state.get("step2"):
         st.success(f"✅ Term '{term}' uploaded. Refresh dashboard to see new data!")
 
         st.subheader("🧐 Something looks wrong?")
-
         backup = st.file_uploader("Upload the backup, refresh the page, then try again. You can skip the first download step.", type="json", key="backup")
         if backup:
             new_bytes = backup.read()
